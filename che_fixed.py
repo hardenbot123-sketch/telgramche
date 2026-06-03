@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 # CONFIG
 # =========================
 
-BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "8967510298:AAH9SUKzNNkxA0SMKdXfHlxeD7AHZnhktfY"
 
 BOT_USERNAME = "StakingILBot"
 
