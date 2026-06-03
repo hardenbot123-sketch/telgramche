@@ -1,0 +1,303 @@
+import sqlite3
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+
+# =========================
+# CONFIG
+# =========================
+
+BOT_TOKEN = "8967510298:AAH9SUKzNNkxA0SMKdXfHlxeD7AHZnhktfY"
+
+BOT_USERNAME = "StakingILBot"
+
+ADMIN_IDS = [
+    959140085
+]
+
+CHANNEL_ID = -1003703530350
+
+DB_NAME = "have_users.db"
+
+
+# =========================
+# BOT TEXTS
+# =========================
+
+WELCOME_TEXT = (
+    "Welcome 🙂\n"
+    "Click Have 👍 in the channel to receive the match.\n\n"
+    "──────────────\n\n"
+    "ברוך הבא 🙂\n"
+    "לחץ Have 👍 בערוץ כדי לקבל את המשחק."
+)
+
+USER_MATCH_TEXT = (
+    "📌 Match Notification Bot 📌\n\n"
+    "1️⃣ Reply to this photo with your bet amount.\n"
+    "Example: €10\n\n"
+    "2️⃣ To remove your bet, reply:\n"
+    "delete bet\n\n"
+    "──────────────\n\n"
+    "📌 בוט עדכוני משחקים 📌\n\n"
+    "1️⃣ הגב לתמונה הזו עם סכום ההימור שלך.\n"
+    "לדוגמה: €10\n\n"
+    "2️⃣ כדי לבטל את ההימור שלך, הגב:\n"
+    "delete bet"
+)
+
+ADMIN_CONTROL_TEXT = (
+    "Admin control for this Have 👍\n\n"
+    "Reply to this photo with any message, photo, video or file.\n"
+    "It will be sent only to users who clicked Have 👍 on this specific post.\n\n"
+    "──────────────\n\n"
+    "ניהול עבור ה־Have 👍 הזה\n\n"
+    "הגב לתמונה הזו עם הודעה, תמונה, וידאו או קובץ.\n"
+    "היא תישלח רק למשתמשים שלחצו Have 👍 על הפוסט הספציפי הזה."
+)
+
+
+# =========================
+# DATABASE
+# =========================
+
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS posts (
+            post_id INTEGER PRIMARY KEY,
+            file_id TEXT,
+            caption TEXT
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            post_id INTEGER,
+            user_id INTEGER,
+            username TEXT,
+            first_name TEXT,
+            PRIMARY KEY (post_id, user_id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS admin_photos (
+            admin_id INTEGER,
+            bot_message_id INTEGER,
+            post_id INTEGER,
+            PRIMARY KEY (admin_id, bot_message_id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_photos (
+            user_id INTEGER,
+            bot_message_id INTEGER,
+            post_id INTEGER,
+            PRIMARY KEY (user_id, bot_message_id)
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def save_post(post_id, file_id, caption):
+    conn = sqlite3.connect(DB_NAME)
+    conn.execute(
+        "INSERT OR REPLACE INTO posts VALUES (?, ?, ?)",
+        (post_id, file_id, caption)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_post(post_id):
+    conn = sqlite3.connect(DB_NAME)
+    post = conn.execute(
+        "SELECT file_id, caption FROM posts WHERE post_id = ?",
+        (post_id,)
+    ).fetchone()
+    conn.close()
+    return post
+
+
+def add_subscription(post_id, user_id, username, first_name):
+    conn = sqlite3.connect(DB_NAME)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO subscriptions
+        (post_id, user_id, username, first_name)
+        VALUES (?, ?, ?, ?)
+        """,
+        (post_id, user_id, username, first_name)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_subscribers(post_id):
+    conn = sqlite3.connect(DB_NAME)
+    users = conn.execute(
+        "SELECT user_id FROM subscriptions WHERE post_id = ?",
+        (post_id,)
+    ).fetchall()
+    conn.close()
+    return [u[0] for u in users]
+
+
+def save_admin_photo(admin_id, bot_message_id, post_id):
+    conn = sqlite3.connect(DB_NAME)
+    conn.execute(
+        "INSERT OR REPLACE INTO admin_photos VALUES (?, ?, ?)",
+        (admin_id, bot_message_id, post_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_post_id_from_admin_reply(admin_id, bot_message_id):
+    conn = sqlite3.connect(DB_NAME)
+    row = conn.execute(
+        """
+        SELECT post_id FROM admin_photos
+        WHERE admin_id = ? AND bot_message_id = ?
+        """,
+        (admin_id, bot_message_id)
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def save_user_photo(user_id, bot_message_id, post_id):
+    conn = sqlite3.connect(DB_NAME)
+    conn.execute(
+        "INSERT OR REPLACE INTO user_photos VALUES (?, ?, ?)",
+        (user_id, bot_message_id, post_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_post_id_from_user_reply(user_id, bot_message_id):
+    conn = sqlite3.connect(DB_NAME)
+    row = conn.execute(
+        """
+        SELECT post_id FROM user_photos
+        WHERE user_id = ? AND bot_message_id = ?
+        """,
+        (user_id, bot_message_id)
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+# =========================
+# CHANNEL POST
+# =========================
+
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    post = update.channel_post
+
+    if not post or not post.photo:
+        return
+
+    post_id = post.message_id
+    file_id = post.photo[-1].file_id
+    caption = post.caption or ""
+
+    save_post(post_id, file_id, caption)
+
+    deep_link = f"https://t.me/{BOT_USERNAME}?start=have_{post_id}"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Have 👍", url=deep_link)]
+    ])
+
+    await context.bot.edit_message_reply_markup(
+        chat_id=post.chat_id,
+        message_id=post.message_id,
+        reply_markup=keyboard
+    )
+
+    for admin_id in ADMIN_IDS:
+
+        sent_admin_photo = await context.bot.send_photo(
+            chat_id=admin_id,
+            photo=file_id,
+            caption=f"{caption}\n\n{ADMIN_CONTROL_TEXT}"
+        )
+
+        save_admin_photo(
+            admin_id,
+            sent_admin_photo.message_id,
+            post_id
+        )
+
+
+# =========================
+# /START
+# =========================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user = update.effective_user
+
+    if context.args and context.args[0].startswith("have_"):
+
+        post_id = int(context.args[0].replace("have_", ""))
+
+        post = get_post(post_id)
+
+        if not post:
+            await update.message.reply_text(
+                "Match not found."
+            )
+            return
+
+        file_id, caption = post
+
+        add_subscription(
+            post_id,
+            user.id,
+            user.username,
+            user.first_name
+        )
+
+        sent_user_photo = await context.bot.send_photo(
+            chat_id=user.id,
+            photo=file_id,
+            caption=f"{caption}\n\n{USER_MATCH_TEXT}"
+        )
+
+        save_user_photo(
+            user.id,
+            sent_user_photo.message_id,
+            post_id
+        )
+
+        username = (
+            f"@{user.username}"
+            if user.username
+            else "No username"
+        )
+
+        for admin_id in ADMIN_IDS:
+
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=(
+                    "🔥 New Have Click\n\n"
+                    f"Name: {user.first_name}\n"
+                    f"Username: {username}\n"
+                    f"User ID: {user.id}\n"
+                    f"Post ID: {post_id}"
+                )
+            )
+
+    else:
+        await update.message.reply_text(
+            WELCOME_TEXT
+        )
